@@ -6,47 +6,52 @@ import json
 import math
 from groq import Groq
 
-# --- MoviePy 2.0+ Specialist Imports ---
+# --- MoviePy 2.0+ Core Imports ---
 from moviepy.video.io.VideoFileClip import VideoFileClip
 from moviepy.video.compositing.concatenate import concatenate_videoclips
 from moviepy.audio.io.AudioFileClip import AudioFileClip
 from moviepy.audio.AudioClip import CompositeAudioClip
 import moviepy.video.fx as vfx
 
-# --- Directory Setup ---
+# --- Setup ---
 TEMP_DIR = "temp_output"
 if not os.path.exists(TEMP_DIR):
     os.makedirs(TEMP_DIR)
 
-# --- AI Agent Logic (Llama 3.1) ---
-def ai_director(user_prompt, api_key):
-    """The LLM acts as the creative lead, deciding the script and voice settings."""
+# --- Agentic Brain (Llama 3.1) ---
+def get_ai_production_plan(api_key, language, story, instructions):
     client = Groq(api_key=api_key)
     
-    system_prompt = """
-    You are a Professional Video Director. Create a JSON production plan.
-    - 'script': High-impact script in the user's requested language (Urdu/English).
-    - 'voice': Select 'ur-PK-AsadNeural' (Urdu Male), 'ur-PK-UzmaNeural' (Urdu Female), 
-               'en-US-AndrewNeural' (Eng Male), or 'en-US-AvaNeural' (Eng Female).
-    - 'tone_settings': {'rate': '-5%', 'pitch': '+2Hz'} (Adjust based on mood).
-    - 'bg_music_level': Float between 0.1 and 0.2 (Volume of the original clip's audio).
+    system_prompt = f"""
+    You are an AI Video Director. Based on the user's story and instructions, create a production plan in JSON.
+    Language Context: {language}
     
-    Return ONLY JSON. No conversation.
+    Instructions:
+    1. 'refined_script': Clean the user's story into a professional narrative.
+    2. 'voice': Select the best voice:
+       - If Urdu: 'ur-PK-AsadNeural' (Male) or 'ur-PK-UzmaNeural' (Female).
+       - If English: 'en-US-AndrewNeural' (Male) or 'en-US-AvaNeural' (Female).
+    3. 'tone_settings': {{'rate': 'speed', 'pitch': 'hertz'}} (e.g., rate: '-5%', pitch: '+2Hz').
+    4. 'bg_volume': Float (0.1 to 0.25).
+    
+    Return ONLY JSON.
     """
+    
+    user_input = f"Story: {story}\nDirector Instructions: {instructions}"
     
     try:
         completion = client.chat.completions.create(
             model="llama-3.1-8b-instant",
             messages=[{"role": "system", "content": system_prompt},
-                      {"role": "user", "content": user_prompt}],
+                      {"role": "user", "content": user_input}],
             response_format={"type": "json_object"}
         )
         return json.loads(completion.choices[0].message.content)
     except Exception as e:
-        st.error(f"LLM Error: {e}")
+        st.error(f"AI Director Error: {e}")
         return None
 
-# --- Voice Engine ---
+# --- Audio/Video Engines ---
 async def generate_voice(text, voice, settings, path):
     communicate = edge_tts.Communicate(
         text, voice, 
@@ -55,105 +60,100 @@ async def generate_voice(text, voice, settings, path):
     )
     await communicate.save(path)
 
-# --- Video Engine ---
-def process_video_production(video_paths, script, config, output_path):
+def produce_final_video(video_paths, script, config, output_path):
     num_clips = len(video_paths)
     words = script.split()
     size = math.ceil(len(words) / num_clips)
     script_parts = [" ".join(words[i:i + size]) for i in range(0, len(words), size)]
     
-    # Ensure list matches clip count
     while len(script_parts) < num_clips: script_parts.append("")
     
     final_segments = []
     
     try:
         for i in range(num_clips):
-            st.write(f"🎞️ Synthesizing Segment {i+1}...")
-            
-            # 1. Voice Generation
+            st.write(f"🎞️ Syncing Segment {i+1} of {num_clips}...")
             audio_p = os.path.join(TEMP_DIR, f"voice_{i}.mp3")
             asyncio.run(generate_voice(script_parts[i], config['voice'], config['tone_settings'], audio_p))
             
-            voice_audio = AudioFileClip(audio_p).volumex(1.6) # Main Voice
+            voice_audio = AudioFileClip(audio_p).volumex(1.6)
             clip = VideoFileClip(video_paths[i])
             
-            # 2. Sync: Match video speed to voice duration
+            # Match video speed to voice duration
             speed_factor = clip.duration / voice_audio.duration
             synced_v = clip.fx(vfx.multiply_speed, factor=speed_factor).set_duration(voice_audio.duration)
             
-            # 3. Audio Mixing: Preserve clip music if present
+            # Preserve & Duck original music
             if clip.audio is not None:
-                # Duck the original music to the level suggested by AI
-                original_music = clip.audio.volumex(config.get('bg_music_level', 0.15))
-                synced_v = synced_v.set_audio(CompositeAudioClip([original_music, voice_audio]))
+                bg = clip.audio.volumex(config.get('bg_volume', 0.15))
+                synced_v = synced_v.set_audio(CompositeAudioClip([bg, voice_audio]))
             else:
                 synced_v = synced_v.set_audio(voice_audio)
                 
             final_segments.append(synced_v)
 
-        # 4. Export
-        st.write("🚀 Rendering Final Masterpiece...")
+        st.write("🚀 Rendering high-quality MP4...")
         final_video = concatenate_videoclips(final_segments, method="compose")
         final_video.write_videofile(output_path, fps=24, codec="libx264", audio_codec="aac")
         return True
-    except Exception as e:
-        st.error(f"Render Error: {e}")
-        return False
     finally:
         for c in final_segments: c.close()
 
-# --- UI ---
-st.set_page_config(page_title="AI Agent Forge", layout="wide")
+# --- Streamlit UI ---
+st.set_page_config(page_title="Advanced AI Video Forge", layout="wide")
 
-# Sidebar for API Key
 with st.sidebar:
-    st.title("🔑 Authentication")
-    api_key = st.text_input("Enter Groq API Key:", type="password")
-    st.info("Get your key at [console.groq.com](https://console.groq.com/)")
-    if st.button("🧹 Clear All Temp Files"):
+    st.title("🔑 Auth & Setup")
+    api_key = st.text_input("Groq API Key:", type="password")
+    if st.button("🧹 Clear All Cache"):
         for f in os.listdir(TEMP_DIR):
             try: os.remove(os.path.join(TEMP_DIR, f))
             except: pass
         st.success("Cleared!")
 
-st.title("🤖 AI Agent Video Forge")
-st.markdown("Automate high-quality Urdu/English content creation using Llama 3.1 Agents.")
+st.title("🤖 Advanced AI Agent Video Forge")
 
-c1, c2 = st.columns(2)
+# Step 1: Configuration
+col_a, col_b = st.columns(2)
+with col_a:
+    language = st.selectbox("🌍 Select Language", ["Urdu", "English"])
+with col_b:
+    files = st.file_uploader("📹 Upload Clips (In Order)", type=["mp4", "mov"], accept_multiple_files=True)
 
-with c1:
-    st.subheader("📝 Production Instructions")
-    prompt = st.text_area("What is the video about?", height=150, 
-                          placeholder="Example: A motivational Urdu video about never giving up. Use a strong male voice.")
-    
-    st.subheader("📹 Source Clips")
-    files = st.file_uploader("Upload Multi-Clips (MP4/MOV)", type=["mp4", "mov"], accept_multiple_files=True)
+# Step 2: Content
+col_c, col_d = st.columns(2)
+with col_c:
+    user_story = st.text_area("📖 Put Your Story Here:", height=200, placeholder="Paste your narrative...")
+with col_d:
+    user_instructions = st.text_area("🎤 Director's Instructions:", height=200, 
+                                     placeholder="e.g. 'Energetic male voice, fast-paced, loud background music'")
 
-if st.button("🔥 Start Agentic Production"):
+# Step 3: Production
+if st.button("🔥 Generate Advanced AI Video"):
     if not api_key:
-        st.error("Please enter your Groq API Key in the sidebar!")
-    elif not prompt or not files:
-        st.warning("Prompt and Video Clips are required.")
+        st.error("Missing API Key in Sidebar!")
+    elif not user_story or not files:
+        st.warning("Please provide both a story and video clips.")
     else:
-        with st.status("🛠️ Agent is working...") as status:
-            # Plan
-            plan = ai_director(prompt, api_key)
+        with st.status("🛠️ AI Agent is constructing your video...") as status:
+            # 1. AI Planning
+            plan = get_ai_production_plan(api_key, language, user_story, user_instructions)
+            
             if plan:
-                st.write(f"**Director's Plan:** {plan['voice']} selected.")
+                st.write(f"**Persona Selected:** {plan['voice']}")
                 
-                # Save Files
+                # 2. Save Uploads
                 paths = []
                 for i, f in enumerate(files):
                     p = os.path.join(TEMP_DIR, f"raw_{i}.mp4")
                     with open(p, "wb") as out: out.write(f.getbuffer())
                     paths.append(p)
                 
-                # Render
+                # 3. Produce
                 out_p = os.path.join(TEMP_DIR, "production_final.mp4")
-                if process_video_production(paths, plan['script'], plan, out_p):
+                if produce_final_video(paths, plan['refined_script'], plan, out_p):
                     status.update(label="✅ Production Success!", state="complete")
                     st.divider()
                     st.video(out_p)
                     with open(out_p, "rb") as vid:
-                        st.download_button("📥 Download Final Video", vid, "AI_Agent_Video.mp4")
+                        st.download_button("📥 Download MP4", vid, "AI_Video_Production.mp4")
