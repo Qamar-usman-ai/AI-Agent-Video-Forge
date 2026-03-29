@@ -31,10 +31,10 @@ def get_ai_production_plan(api_key, language, story, instructions):
     2. 'voice': Select the best voice:
        - If Urdu: 'ur-PK-AsadNeural' (Male) or 'ur-PK-UzmaNeural' (Female).
        - If English: 'en-US-AndrewNeural' (Male) or 'en-US-AvaNeural' (Female).
-    3. 'tone_settings': {{'rate': 'speed', 'pitch': 'hertz'}} (e.g., rate: '-5%', pitch: '+2Hz').
+    3. 'tone_settings': {{"rate": "+0%", "pitch": "+0Hz"}} 
     4. 'bg_volume': Float (0.1 to 0.25).
     
-    Return ONLY JSON.
+    Return ONLY valid JSON. No conversational text.
     """
     
     user_input = f"Story: {story}\nDirector Instructions: {instructions}"
@@ -53,11 +53,11 @@ def get_ai_production_plan(api_key, language, story, instructions):
 
 # --- Audio/Video Engines ---
 async def generate_voice(text, voice, settings, path):
-    communicate = edge_tts.Communicate(
-        text, voice, 
-        rate=settings.get("rate", "-5%"), 
-        pitch=settings.get("pitch", "+0Hz")
-    )
+    # Fallback for settings if they are missing
+    rate = settings.get("rate", "+0%") if settings else "+0%"
+    pitch = settings.get("pitch", "+0Hz") if settings else "+0Hz"
+    
+    communicate = edge_tts.Communicate(text, voice, rate=rate, pitch=pitch)
     await communicate.save(path)
 
 def produce_final_video(video_paths, script, config, output_path):
@@ -74,21 +74,28 @@ def produce_final_video(video_paths, script, config, output_path):
         for i in range(num_clips):
             st.write(f"🎞️ Syncing Segment {i+1} of {num_clips}...")
             audio_p = os.path.join(TEMP_DIR, f"voice_{i}.mp3")
-            asyncio.run(generate_voice(script_parts[i], config['voice'], config['tone_settings'], audio_p))
             
-            voice_audio = AudioFileClip(audio_p).volumex(1.6)
+            # Extract config safely to avoid AttributeErrors
+            voice_name = config.get('voice', 'en-US-AvaNeural')
+            tone = config.get('tone_settings', {})
+            
+            asyncio.run(generate_voice(script_parts[i], voice_name, tone, audio_p))
+            
+            voice_audio = AudioFileClip(audio_p).with_volume_scaled(1.6)
             clip = VideoFileClip(video_paths[i])
             
             # Match video speed to voice duration
             speed_factor = clip.duration / voice_audio.duration
-            synced_v = clip.fx(vfx.multiply_speed, factor=speed_factor).set_duration(voice_audio.duration)
+            # MoviePy 2.0+ uses with_effects for fx
+            synced_v = clip.with_effects([vfx.MultiplySpeed(speed_factor)]).with_duration(voice_audio.duration)
             
             # Preserve & Duck original music
             if clip.audio is not None:
-                bg = clip.audio.volumex(config.get('bg_volume', 0.15))
-                synced_v = synced_v.set_audio(CompositeAudioClip([bg, voice_audio]))
+                bg_vol = config.get('bg_volume', 0.15)
+                bg = clip.audio.with_volume_scaled(bg_vol)
+                synced_v = synced_v.with_audio(CompositeAudioClip([bg, voice_audio]))
             else:
-                synced_v = synced_v.set_audio(voice_audio)
+                synced_v = synced_v.with_audio(voice_audio)
                 
             final_segments.append(synced_v)
 
@@ -96,8 +103,13 @@ def produce_final_video(video_paths, script, config, output_path):
         final_video = concatenate_videoclips(final_segments, method="compose")
         final_video.write_videofile(output_path, fps=24, codec="libx264", audio_codec="aac")
         return True
+    except Exception as e:
+        st.error(f"Production Error: {e}")
+        return False
     finally:
-        for c in final_segments: c.close()
+        for c in final_segments: 
+            try: c.close()
+            except: pass
 
 # --- Streamlit UI ---
 st.set_page_config(page_title="Advanced AI Video Forge", layout="wide")
@@ -105,7 +117,7 @@ st.set_page_config(page_title="Advanced AI Video Forge", layout="wide")
 with st.sidebar:
     st.title("🔑 Auth & Setup")
     api_key = st.text_input("Groq API Key:", type="password")
-    if st.button("🧹 Clear All Cache"):
+    if st.button("清理 Cache (Clear All)"):
         for f in os.listdir(TEMP_DIR):
             try: os.remove(os.path.join(TEMP_DIR, f))
             except: pass
@@ -113,47 +125,43 @@ with st.sidebar:
 
 st.title("🤖 Advanced AI Agent Video Forge")
 
-# Step 1: Configuration
 col_a, col_b = st.columns(2)
 with col_a:
     language = st.selectbox("🌍 Select Language", ["Urdu", "English"])
 with col_b:
     files = st.file_uploader("📹 Upload Clips (In Order)", type=["mp4", "mov"], accept_multiple_files=True)
 
-# Step 2: Content
 col_c, col_d = st.columns(2)
 with col_c:
-    user_story = st.text_area("📖 Put Your Story Here:", height=200, placeholder="Paste your narrative...")
+    user_story = st.text_area("📖 Put Your Story Here:", height=200)
 with col_d:
-    user_instructions = st.text_area("🎤 Director's Instructions:", height=200, 
-                                     placeholder="e.g. 'Energetic male voice, fast-paced, loud background music'")
+    user_instructions = st.text_area("🎤 Director's Instructions:", height=200)
 
-# Step 3: Production
 if st.button("🔥 Generate Advanced AI Video"):
     if not api_key:
-        st.error("Missing API Key in Sidebar!")
+        st.error("Missing API Key!")
     elif not user_story or not files:
-        st.warning("Please provide both a story and video clips.")
+        st.warning("Provide story and clips.")
     else:
-        with st.status("🛠️ AI Agent is constructing your video...") as status:
-            # 1. AI Planning
+        with st.status("🛠️ AI Agent working...") as status:
             plan = get_ai_production_plan(api_key, language, user_story, user_instructions)
             
-            if plan:
-                st.write(f"**Persona Selected:** {plan['voice']}")
+            if plan and isinstance(plan, dict):
+                # Ensure keys exist even if AI missed them
+                script = plan.get('refined_script', user_story)
                 
-                # 2. Save Uploads
                 paths = []
                 for i, f in enumerate(files):
                     p = os.path.join(TEMP_DIR, f"raw_{i}.mp4")
                     with open(p, "wb") as out: out.write(f.getbuffer())
                     paths.append(p)
                 
-                # 3. Produce
                 out_p = os.path.join(TEMP_DIR, "production_final.mp4")
-                if produce_final_video(paths, plan['refined_script'], plan, out_p):
-                    status.update(label="✅ Production Success!", state="complete")
-                    st.divider()
+                
+                if produce_final_video(paths, script, plan, out_p):
+                    status.update(label="✅ Success!", state="complete")
                     st.video(out_p)
                     with open(out_p, "rb") as vid:
-                        st.download_button("📥 Download MP4", vid, "AI_Video_Production.mp4")
+                        st.download_button("📥 Download MP4", vid, "AI_Video.mp4")
+            else:
+                st.error("AI Plan failed. Check API key or Story format.")
