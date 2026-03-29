@@ -12,7 +12,6 @@ from moviepy.video.compositing.concatenate import concatenate_videoclips
 from moviepy.audio.io.AudioFileClip import AudioFileClip
 from moviepy.audio.AudioClip import CompositeAudioClip
 import moviepy.video.fx as vfx
-from moviepy.audio.fx.MultiplyVolume import MultiplyVolume
 
 # --- Setup ---
 TEMP_DIR = "temp_output"
@@ -62,7 +61,7 @@ async def generate_voice(text, voice, settings, path):
 
 # --- Video Engine ---
 def produce_final_video(video_paths, script, config, output_path):
-    # Fix: Ensure script is a string (prevents 'dict' object has no attribute 'split')
+    # Fix: Ensure script is a string
     if isinstance(script, dict):
         script = script.get("text", str(script))
     elif not isinstance(script, str):
@@ -93,17 +92,17 @@ def produce_final_video(video_paths, script, config, output_path):
             
             asyncio.run(generate_voice(script_parts[i], voice_name, tone, audio_p))
             
-            # MoviePy 2.0 Syntax: Using effects for volume and speed
-            voice_audio = AudioFileClip(audio_p).with_effects([MultiplyVolume(1.6)])
+            # --- FIXED SYNTAX: Using native methods instead of external FX imports ---
+            voice_audio = AudioFileClip(audio_p).multiply_volume(1.6)
             clip = VideoFileClip(video_paths[i])
             
             # Match video speed to voice duration
             speed_factor = clip.duration / voice_audio.duration
-            synced_v = clip.with_effects([vfx.MultiplySpeed(speed_factor)]).with_duration(voice_audio.duration)
+            synced_v = clip.multiply_speed(speed_factor).with_duration(voice_audio.duration)
             
             if clip.audio is not None:
                 bg_vol = config.get('bg_volume', 0.15)
-                bg = clip.audio.with_effects([MultiplyVolume(bg_vol)])
+                bg = clip.audio.multiply_volume(bg_vol)
                 synced_v = synced_v.with_audio(CompositeAudioClip([bg, voice_audio]))
             else:
                 synced_v = synced_v.with_audio(voice_audio)
