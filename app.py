@@ -12,6 +12,7 @@ from moviepy.video.compositing.concatenate import concatenate_videoclips
 from moviepy.audio.io.AudioFileClip import AudioFileClip
 from moviepy.audio.AudioClip import CompositeAudioClip
 import moviepy.video.fx as vfx
+from moviepy.audio.fx.MultiplyVolume import MultiplyVolume
 
 # --- Setup ---
 TEMP_DIR = "temp_output"
@@ -27,7 +28,7 @@ def get_ai_production_plan(api_key, language, story, instructions):
     Language Context: {language}
     
     Instructions:
-    1. 'refined_script': A single STRING containing the cleaned narrative. Do not make this an object.
+    1. 'refined_script': A single STRING containing the cleaned narrative.
     2. 'voice': Select the best voice:
        - If Urdu: 'ur-PK-AsadNeural' (Male) or 'ur-PK-UzmaNeural' (Female).
        - If English: 'en-US-AndrewNeural' (Male) or 'en-US-AvaNeural' (Female).
@@ -53,7 +54,6 @@ def get_ai_production_plan(api_key, language, story, instructions):
 
 # --- Audio Engine ---
 async def generate_voice(text, voice, settings, path):
-    # Fallback for settings if they are missing or None
     rate = settings.get("rate", "+0%") if isinstance(settings, dict) else "+0%"
     pitch = settings.get("pitch", "+0Hz") if isinstance(settings, dict) else "+0Hz"
     
@@ -62,9 +62,8 @@ async def generate_voice(text, voice, settings, path):
 
 # --- Video Engine ---
 def produce_final_video(video_paths, script, config, output_path):
-    # --- FIX: Ensure script is a string (prevents 'dict' object has no attribute 'split') ---
+    # Fix: Ensure script is a string (prevents 'dict' object has no attribute 'split')
     if isinstance(script, dict):
-        # If AI nested it like {"text": "..."}, extract it; otherwise stringify it
         script = script.get("text", str(script))
     elif not isinstance(script, str):
         script = str(script)
@@ -89,24 +88,22 @@ def produce_final_video(video_paths, script, config, output_path):
             st.write(f"🎞️ Syncing Segment {i+1} of {num_clips}...")
             audio_p = os.path.join(TEMP_DIR, f"voice_{i}.mp3")
             
-            # Safe extraction of config
             voice_name = config.get('voice', 'en-US-AvaNeural')
             tone = config.get('tone_settings', {})
             
             asyncio.run(generate_voice(script_parts[i], voice_name, tone, audio_p))
             
-            # MoviePy 2.0+ Syntax: with_volume_scaled instead of volumex
-            voice_audio = AudioFileClip(audio_p).with_volume_scaled(1.6)
+            # MoviePy 2.0 Syntax: Using effects for volume and speed
+            voice_audio = AudioFileClip(audio_p).with_effects([MultiplyVolume(1.6)])
             clip = VideoFileClip(video_paths[i])
             
             # Match video speed to voice duration
             speed_factor = clip.duration / voice_audio.duration
-            # MoviePy 2.0+ Syntax: with_effects and MultiplySpeed
             synced_v = clip.with_effects([vfx.MultiplySpeed(speed_factor)]).with_duration(voice_audio.duration)
             
             if clip.audio is not None:
                 bg_vol = config.get('bg_volume', 0.15)
-                bg = clip.audio.with_volume_scaled(bg_vol)
+                bg = clip.audio.with_effects([MultiplyVolume(bg_vol)])
                 synced_v = synced_v.with_audio(CompositeAudioClip([bg, voice_audio]))
             else:
                 synced_v = synced_v.with_audio(voice_audio)
@@ -147,9 +144,9 @@ with col_b:
 
 col_c, col_d = st.columns(2)
 with col_c:
-    user_story = st.text_area("📖 Put Your Story Here:", height=200, placeholder="Paste your narrative...")
+    user_story = st.text_area("📖 Put Your Story Here:", height=200)
 with col_d:
-    user_instructions = st.text_area("🎤 Director's Instructions:", height=200, placeholder="e.g. 'Energetic male voice'")
+    user_instructions = st.text_area("🎤 Director's Instructions:", height=200)
 
 if st.button("🔥 Generate Advanced AI Video"):
     if not api_key:
@@ -161,7 +158,6 @@ if st.button("🔥 Generate Advanced AI Video"):
             plan = get_ai_production_plan(api_key, language, user_story, user_instructions)
             
             if plan and isinstance(plan, dict):
-                # Ensure we have a script to work with
                 script_to_use = plan.get('refined_script', user_story)
                 
                 paths = []
@@ -173,10 +169,10 @@ if st.button("🔥 Generate Advanced AI Video"):
                 out_p = os.path.join(TEMP_DIR, "production_final.mp4")
                 
                 if produce_final_video(paths, script_to_use, plan, out_p):
-                    status.update(label="✅ Production Success!", state="complete")
+                    status.update(label="✅ Success!", state="complete")
                     st.divider()
                     st.video(out_p)
                     with open(out_p, "rb") as vid:
                         st.download_button("📥 Download MP4", vid, "AI_Video_Production.mp4")
             else:
-                st.error("AI Planning failed. Please check your API key or input.")
+                st.error("AI Planning failed. Check your API key or input format.")
