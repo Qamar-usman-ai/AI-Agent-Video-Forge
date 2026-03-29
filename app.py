@@ -19,16 +19,62 @@ if not os.path.exists(TEMP_DIR):
 # VOICE CATALOGUE  (shown in the UI dropdown)
 # ─────────────────────────────────────────────
 VOICE_OPTIONS = {
-    # English
-    "🇺🇸 Andrew (EN Male)"  : "en-US-AndrewNeural",
-    "🇺🇸 Ava (EN Female)"   : "en-US-AvaNeural",
-    "🇺🇸 Eric (EN Male)"    : "en-US-EricNeural",
-    "🇬🇧 Sonia (EN Female)" : "en-GB-SoniaNeural",
-    "🇬🇧 Ryan (EN Male)"    : "en-GB-RyanNeural",
-    # Urdu
-    "🇵🇰 Asad (UR Male)"    : "ur-PK-AsadNeural",
-    "🇵🇰 Uzma (UR Female)"  : "ur-PK-UzmaNeural",
+
+    # ── Urdu – Pakistan ───────────────────────────────────────────────────
+    # Microsoft edge-tts ships exactly two ur-PK voices; tone variants are
+    # created via pitch/rate tweaks applied at render time (see TONE_PRESETS).
+    "🇵🇰 Asad – Natural (UR Male)"          : "ur-PK-AsadNeural",
+    "🇵🇰 Asad – Deep & Slow (UR Male)"      : "ur-PK-AsadNeural::deep",
+    "🇵🇰 Asad – Energetic (UR Male)"        : "ur-PK-AsadNeural::energetic",
+    "🇵🇰 Asad – Dramatic (UR Male)"         : "ur-PK-AsadNeural::dramatic",
+    "🇵🇰 Asad – Calm Documentary (UR Male)" : "ur-PK-AsadNeural::documentary",
+    "🇵🇰 Uzma – Natural (UR Female)"        : "ur-PK-UzmaNeural",
+    "🇵🇰 Uzma – Warm & Slow (UR Female)"    : "ur-PK-UzmaNeural::warm",
+    "🇵🇰 Uzma – Energetic (UR Female)"      : "ur-PK-UzmaNeural::energetic",
+    "🇵🇰 Uzma – Dramatic (UR Female)"       : "ur-PK-UzmaNeural::dramatic",
+    "🇵🇰 Uzma – Calm Documentary (UR Female)": "ur-PK-UzmaNeural::documentary",
+
+    # ── English – United States ───────────────────────────────────────────
+    "🇺🇸 Andrew – Natural (EN Male)"        : "en-US-AndrewNeural",
+    "🇺🇸 Andrew – Deep & Slow (EN Male)"    : "en-US-AndrewNeural::deep",
+    "🇺🇸 Ava – Natural (EN Female)"         : "en-US-AvaNeural",
+    "🇺🇸 Ava – Warm (EN Female)"            : "en-US-AvaNeural::warm",
+    "🇺🇸 Eric – Natural (EN Male)"          : "en-US-EricNeural",
+    "🇺🇸 Guy – Natural (EN Male)"           : "en-US-GuyNeural",
+    "🇺🇸 Jenny – Natural (EN Female)"       : "en-US-JennyNeural",
+    "🇺🇸 Aria – Natural (EN Female)"        : "en-US-AriaNeural",
+    "🇺🇸 Davis – Natural (EN Male)"         : "en-US-DavisNeural",
+    "🇺🇸 Tony – Natural (EN Male)"          : "en-US-TonyNeural",
+    "🇺🇸 Sara – Natural (EN Female)"        : "en-US-SaraNeural",
+    "🇺🇸 Jason – Natural (EN Male)"         : "en-US-JasonNeural",
+    "🇺🇸 Nancy – Natural (EN Female)"       : "en-US-NancyNeural",
+
+    # ── English – United Kingdom ──────────────────────────────────────────
+    "🇬🇧 Sonia – Natural (EN Female)"       : "en-GB-SoniaNeural",
+    "🇬🇧 Ryan – Natural (EN Male)"          : "en-GB-RyanNeural",
+    "🇬🇧 Libby – Natural (EN Female)"       : "en-GB-LibbyNeural",
+    "🇬🇧 Thomas – Natural (EN Male)"        : "en-GB-ThomasNeural",
 }
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TONE PRESETS  –  applied when a voice label ends with "::<preset>"
+# These shift pitch / rate to simulate different "people" with the same voice.
+# ─────────────────────────────────────────────────────────────────────────────
+TONE_PRESETS = {
+    "deep"        : {"rate": "-12%", "pitch": "-8Hz"},
+    "energetic"   : {"rate": "+18%", "pitch": "+4Hz"},
+    "dramatic"    : {"rate": "-8%",  "pitch": "-4Hz"},
+    "documentary" : {"rate": "-5%",  "pitch": "-2Hz"},
+    "warm"        : {"rate": "-6%",  "pitch": "+2Hz"},
+}
+
+def resolve_voice(voice_str: str):
+    """Split 'voice_id::preset' → (voice_id, tone_dict)."""
+    if "::" in voice_str:
+        vid, preset = voice_str.split("::", 1)
+        tone = TONE_PRESETS.get(preset, {"rate": "+0%", "pitch": "+0Hz"})
+        return vid, tone
+    return voice_str, {"rate": "+0%", "pitch": "+0Hz"}
 
 # ─────────────────────────────────────────────
 # AI DIRECTOR  –  Strict prompt → no more 400s
@@ -130,19 +176,32 @@ async def _generate_voice_async(text, voice, settings, path):
     await communicate.save(path)
 
 
-def generate_voice_sync(text, voice, settings, path):
-    """Runs the async TTS call in a safe, event-loop-friendly way."""
+def generate_voice_sync(text, voice_str, settings, path):
+    """
+    Resolve any '::preset' suffix, merge tone overrides, then run TTS.
+    'settings' from the AI plan can still override the preset values.
+    """
+    resolved_id, preset_tone = resolve_voice(voice_str)
+
+    # AI plan tone takes precedence only if it's non-default
+    merged = dict(preset_tone)
+    if isinstance(settings, dict):
+        for k in ("rate", "pitch"):
+            ai_val = settings.get(k)
+            if ai_val and ai_val not in ("+0%", "+0Hz"):
+                merged[k] = ai_val
+
     try:
         loop = asyncio.get_event_loop()
         if loop.is_running():
             import concurrent.futures
             with concurrent.futures.ThreadPoolExecutor() as pool:
-                future = pool.submit(asyncio.run, _generate_voice_async(text, voice, settings, path))
+                future = pool.submit(asyncio.run, _generate_voice_async(text, resolved_id, merged, path))
                 future.result()
         else:
-            loop.run_until_complete(_generate_voice_async(text, voice, settings, path))
+            loop.run_until_complete(_generate_voice_async(text, resolved_id, merged, path))
     except RuntimeError:
-        asyncio.run(_generate_voice_async(text, voice, settings, path))
+        asyncio.run(_generate_voice_async(text, resolved_id, merged, path))
 
 
 # ─────────────────────────────────────────────
@@ -166,7 +225,7 @@ def produce_final_video(video_paths, script, config, output_path):
     while len(script_parts) < num_clips:
         script_parts.append(script_parts[-1] if script_parts else "")
 
-    voice_name = config.get("voice", "en-US-AvaNeural")
+    voice_str  = config.get("voice", "en-US-AvaNeural")
     tone       = config.get("tone_settings", {})
     bg_vol     = float(config.get("bg_volume", 0.15))
 
@@ -177,7 +236,7 @@ def produce_final_video(video_paths, script, config, output_path):
             st.write(f"🎞️ Syncing segment {i + 1} / {num_clips}…")
             audio_path = os.path.join(TEMP_DIR, f"voice_{i}.mp3")
 
-            generate_voice_sync(script_parts[i], voice_name, tone, audio_path)
+            generate_voice_sync(script_parts[i], voice_str, tone, audio_path)
 
             voice_audio = AudioFileClip(audio_path).volumex(1.6)
             clip        = VideoFileClip(video_paths[i])
@@ -227,9 +286,27 @@ with st.sidebar:
 
     st.markdown("---")
     st.subheader("🎙️ Voice Selection")
-    chosen_voice_label = st.selectbox("Choose a narrator voice", list(VOICE_OPTIONS.keys()))
-    chosen_voice_id    = VOICE_OPTIONS[chosen_voice_label]
-    st.caption(f"Voice ID: `{chosen_voice_id}`")
+
+    # Group filter
+    lang_filter = st.radio("Filter by language", ["All", "🇵🇰 Urdu", "🇺🇸🇬🇧 English"], horizontal=True)
+
+    def _filter(label):
+        if lang_filter == "All":
+            return True
+        if lang_filter == "🇵🇰 Urdu":
+            return "🇵🇰" in label
+        return "🇺🇸" in label or "🇬🇧" in label
+
+    filtered_voices = {k: v for k, v in VOICE_OPTIONS.items() if _filter(k)}
+    chosen_voice_label = st.selectbox("Choose a narrator voice", list(filtered_voices.keys()))
+    chosen_voice_id    = filtered_voices[chosen_voice_label]
+
+    # Show resolved ID and preset
+    base_id, preset_tone = resolve_voice(chosen_voice_id)
+    st.caption(f"Voice ID: `{base_id}`")
+    if "::" in chosen_voice_id:
+        preset_name = chosen_voice_id.split("::")[1]
+        st.info(f"🎚️ Tone preset: **{preset_name}** → rate `{preset_tone['rate']}`, pitch `{preset_tone['pitch']}`")
 
     st.markdown("---")
     if st.button("🧹 Clear Temp Cache"):
@@ -269,9 +346,14 @@ with col_d:
     )
 
 # ── Preview chosen voice ──────────────────────
-with st.expander("🔊 Preview Selected Voice (type a test sentence)"):
-    test_text = st.text_input("Test sentence", value="Welcome to the AI Video Forge.")
-    if st.button("▶ Preview"):
+with st.expander("🔊 Preview Selected Voice"):
+    _default_test = (
+        "خوش آمدید! یہ آواز کا نمونہ ہے۔"
+        if "🇵🇰" in chosen_voice_label
+        else "Welcome to the AI Video Forge. This is a voice preview."
+    )
+    test_text = st.text_input("Test sentence", value=_default_test)
+    if st.button("▶ Preview Voice"):
         prev_path = os.path.join(TEMP_DIR, "preview.mp3")
         with st.spinner("Generating preview…"):
             generate_voice_sync(test_text, chosen_voice_id, {}, prev_path)
